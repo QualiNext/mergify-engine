@@ -25,24 +25,38 @@ LOG = daiquiri.getLogger(__name__)
 
 def post_summary(pull, match, checks):
     # Set the summary
-    summary_name = "Mergify Summary"
-    summary = "The following rules match this pull request:"
+    summary_name = "Mergify — Summary"
+    summary = ""
 
     completed_rules = 0
     for rule, missing_conditions in match.matching_rules:
-        summary += "\n\n### %s" % rule['name']
-        summary += " (actions: %s)" % ", ".join(rule['actions'])
+        summary += "#### Rule: %s" % rule['name']
+        summary += " (%s)" % ", ".join(rule['actions'])
         for cond in rule['conditions']:
-            checked = (":heavy_minus_sign:"
-                       if cond in missing_conditions else
-                       ":heavy_check_mark:")
-            summary += "\n\n%s  %s" % (checked, cond)
+            checked = " " if cond in missing_conditions else "X"
+            summary += "\n- [%s] `%s`" % (checked, cond)
         if not missing_conditions:
             completed_rules += 1
+        summary += "\n\n"
 
-    summary_title = "%s rules matches" % len(match.matching_rules)
-    if completed_rules > 0:
-        summary_title += ", %s applied" % completed_rules
+    potential_rules = len(match.matching_rules) - completed_rules
+
+    summary_title = []
+    if completed_rules == 1:
+        summary_title.append("%d rule matches" % completed_rules)
+    elif completed_rules > 1:
+        summary_title.append("%d rules match" % completed_rules)
+
+    if potential_rules == 1:
+        summary_title.append("%s potential rule" % potential_rules)
+    elif potential_rules > 1:
+        summary_title.append("%s potential rules" % potential_rules)
+
+    if completed_rules == 0 and potential_rules == 0:
+        summary_title.append("no rules match, no planned actions")
+
+    summary_title = " and ".join(summary_title)
+
     summary_check = checks.get(summary_name)
     summary_changed = (not summary_check or
                        summary_check.output["title"] != summary_title or
@@ -60,12 +74,15 @@ def run_action(rule, action, check_name, prev_check, installation_id,
         return rule['actions'][action](
             installation_id, installation_token,
             subscription, event_type, data, pull)
-    except Exception as e:
+    except Exception as e:  # pragma: no cover
         pull.log.error("action failed", action=action, rule=rule,
                        exc_info=True)
         # TODO(sileht): extract sentry event id and post it, so
         # we can track it easly
-        return "failure", "action '%s' have failed" % action
+        if rule["actions"][action].dedicated_check:
+            return "failure", "action '%s' have failed" % action, " "
+        else:
+            return
 
 
 def run_actions(installation_id, installation_token, subscription,
@@ -74,9 +91,7 @@ def run_actions(installation_id, installation_token, subscription,
     # Run actions
     for rule, missing_conditions in match.matching_rules:
         for action in rule['actions']:
-            check_name = "Rule: %s (%s)" % (rule['name'], action)
-            title = "Result of action %s for rule '%s'" % (action,
-                                                           rule['name'])
+            check_name = "Mergify — Rule: %s (%s)" % (rule['name'], action)
             prev_check = checks.get(check_name)
 
             if missing_conditions:
@@ -86,11 +101,11 @@ def run_actions(installation_id, installation_token, subscription,
                 cancel_in_progress = rule["actions"][action].cancel_in_progress
                 if (cancel_in_progress and prev_check and
                         prev_check.status == "in_progress"):
-                    summary = ("The rule doesn't match anymore, this action "
-                               "has been cancelled")
+                    title = ("The rule doesn't match anymore, this action "
+                             "has been cancelled")
                     check_api.set_check_run(
                         pull.g_pull, check_name, "completed", "cancelled",
-                        output={"title": title, "summary": summary})
+                        output={"title": title, "summary": " "})
                 continue
 
             # NOTE(sileht): actions already done
@@ -101,11 +116,16 @@ def run_actions(installation_id, installation_token, subscription,
                       event_type != "refresh"):
                     continue
 
-            conclusion, summary = run_action(
+            report = run_action(
                 rule, action, check_name, prev_check,
                 installation_id, installation_token, subscription,
                 event_type, data, pull
             )
+
+            if not report:
+                continue
+
+            conclusion, title, summary = report
 
             if conclusion:
                 status = "completed"

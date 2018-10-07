@@ -15,6 +15,8 @@
 # under the License.
 import logging
 
+import github
+
 import yaml
 
 from mergify_engine import branch_protection
@@ -67,8 +69,181 @@ class TestEngineV2Scenario(base.FunctionalTestBase):
         ], ordered=False)
 
         checks = list(check_api.get_checks(p, {
-            "check_name": "Rule: backport (backport)"}))
+            "check_name": "Mergify — Rule: backport (backport)"}))
         self.assertEqual("cancelled", checks[0].conclusion)
+
+    def test_delete_branch(self):
+        rules = {'pull_request_rules': [
+            {"name": "delete on merge",
+             "conditions": [
+                 "base=master",
+                 "label=merge",
+             ], "actions": {
+                 "delete_head_branch": {}}
+             },
+            {"name": "delete on close",
+             "conditions": [
+                 "base=master",
+                 "label=close",
+             ], "actions": {
+                 "delete_head_branch": {
+                     "on": "close",
+                 }}
+             }
+        ]}
+
+        self.setup_repo(yaml.dump(rules))
+
+        p1, _ = self.create_pr(check="success", base_repo="main")
+        p1.merge()
+        self.push_events([
+            ("check_suite", {"action": "requested"}),
+            ("pull_request", {"action": "closed"}),
+        ], ordered=False)
+
+        p2, _ = self.create_pr(check="success", base_repo="main")
+        p2.edit(state="close")
+
+        self.push_events([
+            ("pull_request", {"action": "closed"}),
+        ], ordered=False)
+
+        self.add_label_and_push_events(p1, "merge")
+        self.push_events([
+            ("check_run", {"check_run": {"conclusion": "success"}}),
+        ], ordered=False)
+        self.add_label_and_push_events(p2, "close")
+        self.push_events([
+            ("check_run", {"check_run": {"conclusion": "success"}}),
+        ], ordered=False)
+
+        pulls = list(self.r_main.get_pulls(state="all"))
+        self.assertEqual(2, len(pulls))
+
+        for b in ("main/pr1", "main/pr2"):
+            try:
+                self.r_main.get_branch(b)
+            except github.GithubException as e:
+                if e.status == 404:
+                    continue
+
+            self.assertTrue(False, "branch %s not deleted" % b)
+
+    def test_label(self):
+        rules = {'pull_request_rules': [
+            {"name": "rename label",
+             "conditions": [
+                 "base=master",
+                 "label=stable",
+             ], "actions": {
+                 "label": {
+                     "add": ['unstable', 'foobar'],
+                     "remove": ['stable', 'what'],
+                 }}
+             }
+        ]}
+
+        self.setup_repo(yaml.dump(rules))
+
+        p, _ = self.create_pr(check="success")
+        self.add_label_and_push_events(p, "stable")
+
+        pulls = list(self.r_main.get_pulls())
+        self.assertEqual(1, len(pulls))
+        self.assertEqual(sorted(["unstable", "foobar"]),
+                         sorted([l.name for l in pulls[0].labels]))
+
+    def test_close(self):
+        rules = {'pull_request_rules': [
+            {"name": "rename label",
+             "conditions": [
+                 "base=master",
+             ], "actions": {
+                 "close": {
+                     "message": "WTF?"
+                 }}
+             }
+        ]}
+
+        self.setup_repo(yaml.dump(rules))
+
+        p, _ = self.create_pr(check="success")
+
+        p.update()
+        self.assertEqual("closed", p.state)
+        self.assertEqual("WTF?", list(p.get_issue_comments())[-1].body)
+
+    def test_dismiss_reviews(self):
+        rules = {'pull_request_rules': [
+            {"name": "dismiss reviews",
+             "conditions": [
+                 "base=master",
+             ], "actions": {
+                 "dismiss_reviews": {
+                     "approved": True,
+                     "changes_requested": ["mergify-test1"],
+                 }}
+             }
+        ]}
+
+        self.setup_repo(yaml.dump(rules))
+        p, commits = self.create_pr(check="success")
+        branch = "fork/pr%d" % self.pr_counter
+        self.create_review_and_push_event(p, commits[-1], "APPROVE")
+
+        self.assertEqual(
+            [("APPROVED", "mergify-test1")],
+            [(r.state, r.user.login) for r in p.get_reviews()]
+        )
+
+        open(self.git.tmp + "/unwanted_changes", "wb").close()
+        self.git("add", self.git.tmp + "/unwanted_changes")
+        self.git("commit", "--no-edit", "-m", "unwanted_changes")
+        self.git("push", "--quiet", "fork", branch)
+
+        self.push_events([
+            ("pull_request", {"action": "synchronize"}),
+        ]),
+        self.push_events([
+            ("check_suite", {"action": "completed"}),
+            ("check_run", {"check_run": {"conclusion": "success"}}),
+            ("pull_request_review", {"action": "dismissed"}),
+        ], ordered=False)
+
+        self.assertEqual(
+            [("DISMISSED", "mergify-test1")],
+            [(r.state, r.user.login) for r in p.get_reviews()]
+        )
+
+        commits = list(p.get_commits())
+        self.create_review_and_push_event(p, commits[-1],
+                                          "REQUEST_CHANGES")
+
+        self.assertEqual(
+            [("DISMISSED", "mergify-test1"),
+             ("CHANGES_REQUESTED", "mergify-test1")],
+            [(r.state, r.user.login) for r in p.get_reviews()]
+        )
+
+        open(self.git.tmp + "/unwanted_changes2", "wb").close()
+        self.git("add", self.git.tmp + "/unwanted_changes2")
+        self.git("commit", "--no-edit", "-m", "unwanted_changes2")
+        self.git("push", "--quiet", "fork", branch)
+
+        self.push_events([
+            ("pull_request", {"action": "synchronize"}),
+        ]),
+        self.push_events([
+            ("check_suite", {"action": "completed"}),
+            ("check_run", {"check_run": {"conclusion": "success"}}),
+            ("pull_request_review", {"action": "dismissed"}),
+        ], ordered=False)
+
+        self.assertEqual(
+            [("DISMISSED", "mergify-test1"),
+             ("DISMISSED", "mergify-test1")],
+            [(r.state, r.user.login) for r in p.get_reviews()]
+        )
 
     def test_merge_backport(self):
         rules = {'pull_request_rules': [
@@ -242,15 +417,15 @@ class TestEngineV2Scenario(base.FunctionalTestBase):
         p, _ = self.create_pr(check="success")
 
         self.push_events([
-            ("check_run", {"check_run": {"conclusion": None}}),
+            ("check_run", {"check_run": {"conclusion": "failure"}}),
         ])
 
         checks = list(check_api.get_checks(p, {
-            "check_name": "Rule: merge (merge)"}))
-        self.assertEqual(None, checks[0].conclusion)
-        self.assertIn("Branch protection settings are blocking automatic "
-                      "merging of Mergify",
-                      checks[0].output['summary'])
+            "check_name": "Mergify — Rule: merge (merge)"}))
+        self.assertEqual("failure", checks[0].conclusion)
+        self.assertIn("Branch protection settings are blocking "
+                      "automatic merging",
+                      checks[0].output['title'])
 
     def test_merge_branch_protection_strict(self):
         rules = {'pull_request_rules': [
@@ -292,11 +467,12 @@ class TestEngineV2Scenario(base.FunctionalTestBase):
         self.create_status_and_push_event(p2)
         self.push_events([
             ("check_run", {"check_run": {"conclusion": "failure"}}),
-        ])
+            ("check_suite", {"action": "completed"}),
+        ], ordered=False)
 
         checks = list(check_api.get_checks(p2, {
-            "check_name": "Rule: merge (merge)"}))
+            "check_name": "Mergify — Rule: merge (merge)"}))
         self.assertEqual("failure", checks[0].conclusion)
-        self.assertIn("Branch protection setting 'strict' conflict with "
+        self.assertIn("Branch protection setting 'strict' conflicts with "
                       "Mergify configuration",
-                      checks[0].output['summary'])
+                      checks[0].output['title'])

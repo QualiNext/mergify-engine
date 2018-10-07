@@ -51,7 +51,8 @@ def test_convert_simple():
     assert converted == [
         {
             "name": "default",
-            "conditions": ["label!=no-mergify",
+            "conditions": ["-base~=^stable/.*",
+                           "label!=no-mergify",
                            "#approved-reviews-by>=2",
                            "status-success=continuous-integration/travis-ci"],
             "actions": {
@@ -64,9 +65,9 @@ def test_convert_simple():
         },
         {
             "name": "backport stable/3.0",
-            "conditions": ["label!=no-mergify",
-                           "label=backport-to-3.0",
-                           "merged"],
+            "conditions": ["-base~=^stable/.*",
+                           "label!=no-mergify",
+                           "label=backport-to-3.0"],
             "actions": {
                 "backport": {
                     "branches": ["stable/3.0"],
@@ -75,9 +76,9 @@ def test_convert_simple():
         },
         {
             "name": "backport stable/3.1",
-            "conditions": ["label!=no-mergify",
-                           "label=backport-to-3.1",
-                           "merged"],
+            "conditions": ["-base~=^stable/.*",
+                           "label!=no-mergify",
+                           "label=backport-to-3.1"],
             "actions": {
                 "backport": {
                     "branches": ["stable/3.1"],
@@ -102,8 +103,7 @@ def test_convert_simple():
             "name": "backport stable/3.0 from ^stable/.*",
             "conditions": ["base~=^stable/.*",
                            "label!=no-mergify",
-                           "label=backport-to-3.0",
-                           "merged"],
+                           "label=backport-to-3.0"],
             "actions": {
                 "backport": {
                     "branches": ["stable/3.0"],
@@ -114,8 +114,7 @@ def test_convert_simple():
             "name": "backport stable/3.1 from ^stable/.*",
             "conditions": ["base~=^stable/.*",
                            "label!=no-mergify",
-                           "label=backport-to-3.1",
-                           "merged"],
+                           "label=backport-to-3.1"],
             "actions": {
                 "backport": {
                     "branches": ["stable/3.1"],
@@ -123,6 +122,43 @@ def test_convert_simple():
             },
         },
 
+    ]
+    # Validate generated conf with the schema
+    rules.PullRequestRules(converted)
+
+
+def test_convert_no_branches():
+    old_rules = {
+        'rules': {
+            'default': {
+                'protection': {
+                    'required_pull_request_reviews': {
+                        'required_approving_review_count': 2
+                    },
+                    'required_status_checks': {
+                        'contexts': ['continuous-integration/travis-ci'],
+                        'strict': True
+                    }},
+                'merge_strategy': {
+                    'method': 'rebase'
+                }},
+        }
+    }
+    converted = convert.convert_config(old_rules["rules"])
+    assert converted == [
+        {
+            "name": "default",
+            "conditions": ["label!=no-mergify",
+                           "#approved-reviews-by>=2",
+                           "status-success=continuous-integration/travis-ci"],
+            "actions": {
+                "merge": {
+                    "method": "rebase",
+                    "rebase_fallback": "merge",
+                    "strict": True,
+                },
+            },
+        },
     ]
     # Validate generated conf with the schema
     rules.PullRequestRules(converted)
@@ -164,7 +200,9 @@ def test_convert_rebase_fallback():
     assert converted == [
         {
             "name": "default",
-            "conditions": ["label!=no-mergify",
+            "conditions": ["-base~=^stable/.*",
+                           "-base~=^unstable/.*",
+                           "label!=no-mergify",
                            "#approved-reviews-by>=2",
                            "status-success=continuous-integration/travis-ci"],
             "actions": {
@@ -252,6 +290,45 @@ def test_convert_with_some_none():
                 },
             }
         }
+    ]
+    # Validate generated conf with the schema
+    rules.PullRequestRules(converted)
+
+
+def test_null_branch():
+    old_rules = {
+        'rules': {
+            'default': {
+                'protection': {
+                    'required_pull_request_reviews': {
+                        'required_approving_review_count': 1
+                    },
+                    'required_status_checks': {
+                        'contexts': ['continuous-integration/travis-ci'],
+                    }},
+                'merge_strategy': {
+                    'method': 'rebase',
+                }},
+            'branches': {
+                'gh-pages': None,
+            },
+        },
+    }
+    converted = convert.convert_config(old_rules["rules"])
+    assert converted == [
+        {
+            "name": "default",
+            "conditions": ["-base=gh-pages",
+                           "label!=no-mergify",
+                           "#approved-reviews-by>=1",
+                           "status-success=continuous-integration/travis-ci"],
+            "actions": {
+                "merge": {
+                    "method": "rebase",
+                    "rebase_fallback": "merge",
+                },
+            },
+        },
     ]
     # Validate generated conf with the schema
     rules.PullRequestRules(converted)
