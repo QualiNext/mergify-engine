@@ -11,3 +11,5 @@ dist
 doc/build
 test.yml
 prometheus/
+/.idea
+/build
