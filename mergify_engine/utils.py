@@ -43,7 +43,6 @@ from mergify_engine import config
 
 LOG = daiquiri.getLogger(__name__)
 
-
 global REDIS_CONNECTION_RQ
 REDIS_CONNECTION_RQ = None
 
@@ -171,6 +170,11 @@ def get_installation_id(integration, owner):
 
 
 def get_subscription(r, installation_id):
+    subscription = {"token": config.GITHUB_TOKEN, "subscribed": True}
+    return subscription
+
+
+def get_subscription_org(r, installation_id):
     sub = r.get("subscription-cache-%s" % installation_id)
     if not sub:  # pragma: no cover
         LOG.debug("Subscription not cached, retrieving it...",

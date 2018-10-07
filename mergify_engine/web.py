@@ -135,3 +135,7 @@ def event_testing_handler():  # pragma: no cover
 @app.route("/")
 def index():  # pragma: no cover
     return flask.redirect("https://mergify.io/")
+
+
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=5000)

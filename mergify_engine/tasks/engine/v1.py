@@ -61,14 +61,18 @@ def handle(installation_id, installation_token, subscription,
     # sent to the same worker.
     # This work in coordination with app.conf.worker_direct = True that creates
     # a dedicated queue on exchange c.dq2 for each worker
-    ring = RINGS_PER_SUBSCRIPTION[subscription["subscribed"]]
+    #ring = RINGS_PER_SUBSCRIPTION[subscription["subscribed"]]
+    ring = get_ring(config.TOPOLOGY_FREE, "free")
     routing_key = ring.get_node(data["repository"]["full_name"])
     LOG.info("Sending repo %s to %s", data["repository"]["full_name"],
              routing_key)
+
     _handle.s(installation_id, installation_token, subscription,
               branch_rules, event_type, data, event_pull_raw
               ).apply_async(exchange='C.dq2', routing_key=routing_key)
 
+    # _handle(installation_id, installation_token, subscription,
+    #           branch_rules, event_type, data, event_pull_raw)
 
 @app.task
 def _handle(installation_id, installation_token, subscription,

@@ -155,7 +155,7 @@ def check_configuration_changes(event_type, data, event_pull):
                     })
 
 
-@app.task
+#@app.task
 def run(event_type, data, subscription):
     """Everything starts here."""
     integration = github.GithubIntegration(config.INTEGRATION_ID,
@@ -238,9 +238,9 @@ def run(event_type, data, subscription):
         # installation_token within each next tasks, in case we reach the
         # expiration
         if "rules" in mergify_config:
-            v1.handle.s(installation_id, installation_token, subscription,
+            v1.handle(installation_id, installation_token, subscription,
                         mergify_config["rules"], event_type, data,
-                        event_pull.raw_data).apply_async()
+                        event_pull.raw_data)
 
         elif "pull_request_rules" in mergify_config:
             v2.handle.s(

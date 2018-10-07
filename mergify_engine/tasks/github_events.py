@@ -142,6 +142,120 @@ def job_refresh_all():
              "%s branches", *counts)
 
 
+def job_filter_and_run(event_type, event_id, data):
+    subscription = utils.get_subscription(
+       utils.get_redis_for_cache(), data["installation"]["id"])
+
+    if not subscription["token"]:
+        msg_action = "ignored (no token)"
+
+    elif event_type == "installation" and data["action"] == "created":
+        for repository in data["repositories"]:
+            if repository["private"] and not subscription["subscribed"]:  # noqa pragma: no cover
+                continue
+
+            job_installations.delay(data["installation"]["id"],
+                                    [repository])
+        msg_action = "pushed to backend"
+
+    elif event_type == "installation" and data["action"] == "deleted":
+        # TODO(sileht): move out this engine V1 related code
+        key = "queues~%s~*~*~*~*" % data["installation"]["id"]
+        utils.get_redis_for_cache().delete(key)
+        msg_action = "handled, cache cleaned"
+
+    elif (event_type == "installation_repositories" and
+          data["action"] == "added"):
+        for repository in data["repositories_added"]:
+            if repository["private"] and not subscription["subscribed"]:  # noqa pragma: no cover
+                continue
+
+            job_installations.delay(data["installation"]["id"], [repository])
+
+        msg_action = "pushed to backend"
+
+    elif (event_type == "installation_repositories" and
+          data["action"] == "removed"):
+        for repository in data["repositories_removed"]:
+            if repository["private"] and not subscription["subscribed"]:  # noqa pragma: no cover
+                continue
+
+            # TODO(sileht): move out this engine V1 related code
+            key = "queues~%s~%s~%s~*~*" % (
+                data["installation"]["id"],
+                data["installation"]["account"]["login"].lower(),
+                repository["name"].lower()
+            )
+            utils.get_redis_for_cache().delete(key)
+
+        msg_action = "handled, cache cleaned"
+
+    elif event_type in ["installation", "installation_repositories"]:
+        msg_action = "ignored (action %s)" % data["action"]
+
+    elif event_type in ["pull_request", "pull_request_review", "status",
+                        "check_suite", "check_run"]:
+
+        if data["repository"]["archived"]:  # pragma: no cover
+            msg_action = "ignored (repository archived)"
+
+        elif (data["repository"]["private"] and not
+                subscription["subscribed"]):
+            msg_action = "ignored (not public or subscribe)"
+
+        elif event_type == "status" and data["state"] == "pending":
+            msg_action = "ignored (state pending)"
+
+        elif event_type == "status" and data["context"] == "mergify/pr":
+            msg_action = "ignored (mergify status)"
+
+        elif (event_type == "pull_request" and data["action"] not in [
+                "opened", "reopened", "closed", "synchronize",
+                "labeled", "unlabeled"]):
+            msg_action = "ignored (action %s)" % data["action"]
+
+        else:
+            engine.run(event_type, data, subscription)
+            msg_action = "pushed to backend"
+
+            if event_type == "pull_request":
+                msg_action += ", action: %s" % data["action"]
+
+            elif event_type == "pull_request_review":
+                msg_action += ", action: %s, review-state: %s" % (
+                    data["action"], data["review"]["state"])
+
+            elif event_type == "pull_request_review_comment":
+                msg_action += ", action: %s, review-state: %s" % (
+                    data["action"], data["comment"]["position"])
+
+            elif event_type == "status":
+                msg_action += ", ci-status: %s, sha: %s" % (
+                    data["state"], data["sha"])
+
+            elif event_type in ["check_run", "check_suite"]:
+                msg_action += (
+                    ", action: %s, status: %s, conclusion: %s, sha: %s" % (
+                        data["action"],
+                        data[event_type]["status"],
+                        data[event_type]["conclusion"],
+                        data[event_type]["head_sha"]))
+    else:
+        msg_action = "ignored (unexpected event_type)"
+
+    if "repository" in data:
+        repo_name = data["repository"]["full_name"]
+    else:
+        repo_name = data["installation"]["account"]["login"]
+
+    LOG.info('event %s', msg_action,
+             event_type=event_type,
+             event_id=event_id,
+             install_id=data["installation"]["id"],
+             repository=repo_name,
+             subscribed=subscription["subscribed"])
+
+
 @app.task
 def job_filter_and_dispatch(event_type, event_id, data):
     subscription = utils.get_subscription(
